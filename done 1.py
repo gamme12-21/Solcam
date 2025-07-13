@@ -23,6 +23,8 @@ bookings = []
 pending_payments = {}
 user_states = {}
 teacher_edit_states = {}
+user_profiles = {}  # New: store user profiles with referrals, bookings, etc.
+referrals = {}  # New: store referral data {user_id: [referred_user_ids]}
 
 # Teacher management conversation states
 TEACHER_EDIT_STATES = {
@@ -30,6 +32,10 @@ TEACHER_EDIT_STATES = {
     'WAITING_FOR_VALUE': 'waiting_for_value',
     'WAITING_FOR_NEW_TEACHER': 'waiting_for_new_teacher'
 }
+
+# Referral rewards
+REFERRAL_BONUS = 10  # $10 bonus per successful referral
+REFERRAL_DISCOUNT = 5  # $5 discount for referred users
 
 # Initialize sample teacher data
 def initialize_teachers():
@@ -106,6 +112,65 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     chat_id = update.effective_chat.id
 
+    # Handle referral system
+    referrer_id = None
+    if context.args:
+        try:
+            referrer_id = int(context.args[0])
+            if referrer_id != user.id and referrer_id not in user_profiles.get(user.id, {}).get('referred_by', []):
+                # Initialize referrals dict if not exists
+                if referrer_id not in referrals:
+                    referrals[referrer_id] = []
+                
+                # Add referral if not already referred
+                if user.id not in referrals[referrer_id]:
+                    referrals[referrer_id].append(user.id)
+                    
+                    # Initialize user profile if not exists
+                    if user.id not in user_profiles:
+                        user_profiles[user.id] = {
+                            'referred_by': referrer_id,
+                            'referral_bonus': REFERRAL_DISCOUNT,
+                            'total_bookings': 0,
+                            'total_spent': 0,
+                            'join_date': datetime.now().strftime("%Y-%m-%d")
+                        }
+                    else:
+                        user_profiles[user.id]['referred_by'] = referrer_id
+                        user_profiles[user.id]['referral_bonus'] = REFERRAL_DISCOUNT
+                    
+                    # Add bonus to referrer
+                    if referrer_id not in user_profiles:
+                        user_profiles[referrer_id] = {
+                            'referral_bonus': REFERRAL_BONUS,
+                            'total_bookings': 0,
+                            'total_spent': 0,
+                            'join_date': datetime.now().strftime("%Y-%m-%d")
+                        }
+                    else:
+                        user_profiles[referrer_id]['referral_bonus'] = user_profiles[referrer_id].get('referral_bonus', 0) + REFERRAL_BONUS
+                    
+                    # Notify referrer
+                    try:
+                        await context.bot.send_message(
+                            referrer_id,
+                            f"🎉 Great! {user.first_name} joined using your referral link!\n"
+                            f"💰 You earned ${REFERRAL_BONUS} bonus! Use it on your next booking."
+                        )
+                    except:
+                        pass
+        except (ValueError, IndexError):
+            pass
+
+    # Initialize user profile if not exists
+    if user.id not in user_profiles:
+        user_profiles[user.id] = {
+            'referral_bonus': 0,
+            'total_bookings': 0,
+            'total_spent': 0,
+            'join_date': datetime.now().strftime("%Y-%m-%d")
+        }
+
     # Store user information
     user_states[user.id] = {
         'username': user.username or "No username set",
@@ -117,15 +182,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 Hello {user.first_name}! 👋
 
-I'm your personal beutiful girls booking assistant. Here's what I can help you with:
-
+I'm your personal beautiful girls booking assistant. Here's what I can help you with:
 
 🩷 For Girls:
-• Browse amazing beutiful cam girls
+• Browse amazing beautiful cam girls
 • View detailed profiles
 • Book sessions
 • Secure Bitcoin payments
-
+• Earn rewards through referrals
 
 Ready to start BOOM BOOM 💦? Choose an option below!
 
@@ -133,8 +197,8 @@ Ready to start BOOM BOOM 💦? Choose an option below!
 
     keyboard = [
         [InlineKeyboardButton("💋 Browse Models", callback_data='check_teachers')],
-        [InlineKeyboardButton("ℹ️ How It Works", callback_data='how_it_works')],
-        [InlineKeyboardButton("💬 Contact Support", callback_data='contact_support')]
+        [InlineKeyboardButton("👤 My Profile", callback_data='my_profile'), InlineKeyboardButton("🎁 Refer & Earn", callback_data='referral_system')],
+        [InlineKeyboardButton("ℹ️ How It Works", callback_data='how_it_works'), InlineKeyboardButton("💬 Contact Support", callback_data='contact_support')]
     ]
 
     # Add admin panel button only for admins
@@ -189,7 +253,7 @@ async def show_available_teachers(update: Update, context: ContextTypes.DEFAULT_
     header_message = """🔥 OUR AMAZING GIRLS 🔥
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Choose your perfect beutiful girls from our curated selection and have fun with your lady 💦  🥵! :"""
+Choose your perfect beautiful girls from our curated selection and have fun with your lady 💦  🥵! :"""
 
     await context.bot.send_message(chat_id, header_message)
 
@@ -201,14 +265,14 @@ Choose your perfect beutiful girls from our curated selection and have fun with 
 
 😘 Age: {teacher['age']} years
 
-😈 Interasted : {', '.join(teacher['subjects'])}
+😈 Interested: {', '.join(teacher['subjects'])}
 
 💸 Rate: ${teacher['price']}/hour
 
 ⭐ Rating: {teacher.get('rating', 'N/A')}/5.0
 
 👙Why Choose {teacher['name'].split()[0]}:
-ccc"{teacher.get('why_choose', 'Professional mom girl.')}"
+"{teacher.get('why_choose', 'Professional model.')}"
 
 💡 Experience: {teacher.get('experience', 'Experienced educator')}
 
@@ -218,7 +282,7 @@ ccc"{teacher.get('why_choose', 'Professional mom girl.')}"
 
             keyboard = [
                 [InlineKeyboardButton("🍑 View Full Profile", callback_data=f"profile_teacher_{teacher['id']}")],
-                [InlineKeyboardButton("💃 Book Me😘", callback_data=f"book_teacher_{teacher['id']}")]
+                [InlineKeyboardButton("💃 Book Me😘", callback_data=f"book_teacher_{teacher['id']}"), InlineKeyboardButton("💬 Message", callback_data=f"message_teacher_{teacher['id']}")]
             ]
             reply_markup = create_inline_keyboard(keyboard)
 
@@ -243,6 +307,19 @@ ccc"{teacher.get('why_choose', 'Professional mom girl.')}"
                     text=teacher_card,
                     reply_markup=reply_markup
                 )
+
+    # Add navigation menu at the end
+    nav_message = """━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔥 Ready to book your perfect girl? 🔥
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
+
+    nav_keyboard = [
+        [InlineKeyboardButton("👤 My Profile", callback_data='my_profile'), InlineKeyboardButton("🎁 Refer & Earn", callback_data='referral_system')],
+        [InlineKeyboardButton("ℹ️ How It Works", callback_data='how_it_works'), InlineKeyboardButton("💬 Support", callback_data='contact_support')],
+        [InlineKeyboardButton("🔙 Back to Main", callback_data='back_to_main')]
+    ]
+    nav_reply_markup = create_inline_keyboard(nav_keyboard)
+    await context.bot.send_message(chat_id, nav_message, reply_markup=nav_reply_markup)
 
 # Show detailed teacher profile
 async def show_teacher_profile(update: Update, context: ContextTypes.DEFAULT_TYPE, teacher_id: int) -> None:
@@ -330,6 +407,12 @@ async def handle_book_teacher(update: Update, context: ContextTypes.DEFAULT_TYPE
         await context.bot.send_message(chat_id, '❌ This Model is currently unavailable.')
         return
 
+    # Calculate final amount with referral bonus
+    original_amount = teacher['price']
+    referral_bonus = user_profiles.get(user_id, {}).get('referral_bonus', 0)
+    discount_applied = min(referral_bonus, original_amount)  # Can't discount more than the price
+    final_amount = original_amount - discount_applied
+    
     # Create booking
     booking_id = str(uuid.uuid4())[:8]
     booking = {
@@ -339,7 +422,9 @@ async def handle_book_teacher(update: Update, context: ContextTypes.DEFAULT_TYPE
         'student_name': student_full_name,
         'teacher_id': teacher_id,
         'teacher_name': teacher['name'],
-        'price': teacher['price'],
+        'price': final_amount,
+        'original_price': original_amount,
+        'discount_applied': discount_applied,
         'status': 'pending_payment',
         'created_at': datetime.now()
     }
@@ -347,8 +432,21 @@ async def handle_book_teacher(update: Update, context: ContextTypes.DEFAULT_TYPE
     bookings.append(booking)
     pending_payments[booking_id] = booking
 
+    # Update user's referral bonus (subtract used amount)
+    if discount_applied > 0:
+        user_profiles[user_id]['referral_bonus'] -= discount_applied
+
     # Send payment instructions to student
+    discount_text = f"\n🎁 Referral Discount: -${discount_applied}" if discount_applied > 0 else ""
     payment_message = f"""💰 PAYMENT INSTRUCTIONS 💰
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📋 BOOKING DETAILS:
+• Model: {teacher['name']}
+• Original Price: ${original_amount}/hour{discount_text}
+• Final Amount: ${final_amount}/hour
+
+💳 PAYMENT DETAILS:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 💋 Booking Details:
@@ -936,6 +1034,220 @@ The model is now available for booking! 🎉"""
         # Clean up state
         del teacher_edit_states[user.id]
 
+# New: User Profile System
+async def show_user_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    chat_id = update.effective_chat.id
+    
+    profile = user_profiles.get(user.id, {})
+    referred_count = len(referrals.get(user.id, []))
+    
+    profile_message = f"""👤 YOUR PROFILE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+👋 Name: {user.full_name}
+🆔 Username: @{user.username or 'Not set'}
+📅 Member Since: {profile.get('join_date', 'N/A')}
+
+📊 STATISTICS:
+• Total Bookings: {profile.get('total_bookings', 0)}
+• Total Spent: ${profile.get('total_spent', 0)}
+• Referral Bonus: ${profile.get('referral_bonus', 0)}
+• Friends Referred: {referred_count}
+
+💰 REWARDS:
+• Available Bonus: ${profile.get('referral_bonus', 0)}
+• Next Booking Discount: ${min(profile.get('referral_bonus', 0), 50)}
+
+🎁 REFERRAL PROGRAM:
+• Earn ${REFERRAL_BONUS} for each friend who joins!
+• Your friends get ${REFERRAL_DISCOUNT} discount!
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
+
+    keyboard = [
+        [InlineKeyboardButton("🎁 Refer Friends", callback_data='referral_system')],
+        [InlineKeyboardButton("📋 My Bookings", callback_data='my_bookings'), InlineKeyboardButton("🏆 Leaderboard", callback_data='leaderboard')],
+        [InlineKeyboardButton("🔙 Back to Main", callback_data='back_to_main')]
+    ]
+    
+    reply_markup = create_inline_keyboard(keyboard)
+    await context.bot.send_message(chat_id, profile_message, reply_markup=reply_markup)
+
+# New: Referral System
+async def show_referral_system(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    chat_id = update.effective_chat.id
+    
+    referred_users = referrals.get(user.id, [])
+    referral_link = f"https://t.me/{context.bot.username}?start={user.id}"
+    
+    referral_message = f"""🎁 REFERRAL PROGRAM
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+💰 EARN REWARDS BY INVITING FRIENDS!
+
+🎯 How it works:
+1. Share your referral link
+2. Friend joins using your link
+3. You earn ${REFERRAL_BONUS} bonus
+4. Friend gets ${REFERRAL_DISCOUNT} discount
+
+📊 YOUR STATS:
+• Friends Referred: {len(referred_users)}
+• Total Earned: ${len(referred_users) * REFERRAL_BONUS}
+• Available Bonus: ${user_profiles.get(user.id, {}).get('referral_bonus', 0)}
+
+🔗 YOUR REFERRAL LINK:
+`{referral_link}`
+
+📱 Share this link with friends to earn rewards!
+
+💡 Tips for more referrals:
+• Share in group chats
+• Post on social media
+• Tell friends about our amazing models
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
+
+    keyboard = [
+        [InlineKeyboardButton("📱 Share Link", url=f"https://t.me/share/url?url={referral_link}&text=Join SOLCAM for amazing cam girls! 💋")],
+        [InlineKeyboardButton("👥 My Referrals", callback_data='my_referrals'), InlineKeyboardButton("🏆 Top Referrers", callback_data='top_referrers')],
+        [InlineKeyboardButton("🔙 Back to Profile", callback_data='my_profile')]
+    ]
+    
+    reply_markup = create_inline_keyboard(keyboard)
+    await context.bot.send_message(chat_id, referral_message, reply_markup=reply_markup)
+
+# New: My Referrals
+async def show_my_referrals(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    chat_id = update.effective_chat.id
+    
+    referred_users = referrals.get(user.id, [])
+    
+    if not referred_users:
+        message = """👥 MY REFERRALS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+You haven't referred anyone yet! 😔
+
+🎯 Start earning by sharing your referral link:
+• Each friend = ${} bonus for you
+• Friends get ${} discount
+
+Share your link and start earning! 💰""".format(REFERRAL_BONUS, REFERRAL_DISCOUNT)
+    else:
+        message = f"""👥 MY REFERRALS ({len(referred_users)})
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+"""
+        for i, referred_id in enumerate(referred_users, 1):
+            try:
+                referred_user = await context.bot.get_chat(referred_id)
+                name = referred_user.first_name or "Unknown"
+                message += f"{i}. {name} (+${REFERRAL_BONUS})\n"
+            except:
+                message += f"{i}. User ID: {referred_id} (+${REFERRAL_BONUS})\n"
+        
+        message += f"\n💰 Total Earned: ${len(referred_users) * REFERRAL_BONUS}"
+    
+    keyboard = [
+        [InlineKeyboardButton("🎁 Refer More", callback_data='referral_system')],
+        [InlineKeyboardButton("🔙 Back", callback_data='referral_system')]
+    ]
+    
+    reply_markup = create_inline_keyboard(keyboard)
+    await context.bot.send_message(chat_id, message, reply_markup=reply_markup)
+
+# New: My Bookings
+async def show_my_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    chat_id = update.effective_chat.id
+    
+    user_bookings = [booking for booking in bookings if booking.get('user_id') == user.id]
+    
+    if not user_bookings:
+        message = """📋 MY BOOKINGS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+You haven't made any bookings yet! 🤔
+
+🎯 Ready to start? Browse our amazing models:
+• Professional cam girls
+• Secure payments
+• Instant booking confirmation
+
+Start your first booking now! 💋"""
+    else:
+        message = f"""📋 MY BOOKINGS ({len(user_bookings)})
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+"""
+        for booking in user_bookings[-5:]:  # Show last 5 bookings
+            teacher_name = "Unknown"
+            for teacher in teachers:
+                if teacher['id'] == booking.get('teacher_id'):
+                    teacher_name = teacher['name']
+                    break
+            
+            status_emoji = "✅" if booking.get('confirmed') else "⏳"
+            message += f"{status_emoji} {teacher_name} - ${booking.get('amount', 0)}\n"
+            message += f"   📅 {booking.get('timestamp', 'N/A')}\n\n"
+        
+        profile = user_profiles.get(user.id, {})
+        message += f"💰 Total Spent: ${profile.get('total_spent', 0)}\n"
+        message += f"🎁 Available Bonus: ${profile.get('referral_bonus', 0)}"
+    
+    keyboard = [
+        [InlineKeyboardButton("💋 Browse Models", callback_data='check_teachers')],
+        [InlineKeyboardButton("🔙 Back to Profile", callback_data='my_profile')]
+    ]
+    
+    reply_markup = create_inline_keyboard(keyboard)
+    await context.bot.send_message(chat_id, message, reply_markup=reply_markup)
+
+# New: Leaderboard
+async def show_leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    
+    # Create leaderboard based on referrals
+    leaderboard = []
+    for user_id, referred_list in referrals.items():
+        try:
+            user = await context.bot.get_chat(user_id)
+            name = user.first_name or "Unknown"
+            leaderboard.append((name, len(referred_list), user_id))
+        except:
+            leaderboard.append(("Unknown User", len(referred_list), user_id))
+    
+    leaderboard.sort(key=lambda x: x[1], reverse=True)
+    
+    message = """🏆 REFERRAL LEADERBOARD
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🥇 TOP REFERRERS:
+
+"""
+    
+    if not leaderboard:
+        message += "No referrals yet! Be the first! 🎯"
+    else:
+        medals = ["🥇", "🥈", "🥉"]
+        for i, (name, count, user_id) in enumerate(leaderboard[:10], 1):
+            medal = medals[i-1] if i <= 3 else f"{i}."
+            message += f"{medal} {name} - {count} referrals\n"
+    
+    message += f"\n💡 Each referral = ${REFERRAL_BONUS} bonus!"
+    
+    keyboard = [
+        [InlineKeyboardButton("🎁 Start Referring", callback_data='referral_system')],
+        [InlineKeyboardButton("🔙 Back to Profile", callback_data='my_profile')]
+    ]
+    
+    reply_markup = create_inline_keyboard(keyboard)
+    await context.bot.send_message(chat_id, message, reply_markup=reply_markup)
+
 # Callback query handler
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -1030,23 +1342,64 @@ We're here to assist you 24/7!
 📞 Support Contact:
 {ADMIN_USERNAME}
 
-💡 What we can help with:
-• booking assistance
-• Payment verification issues
+💡 Common Issues:
+• Payment problems
+• Booking questions
 • Technical support
-• Account questions
-• General inquiries
+• Account issues
 
-⚡ Response Time:
-We typically respond within 5 minutes during business hours.
-
-Don't hesitate to reach out - we're happy to help! 😊"""
+We typically respond within 1-2 hours!"""
 
             keyboard = [
-                [InlineKeyboardButton("📱 Message Support", url=f"https://t.me/{ADMIN_USERNAME.replace('@', '')}")],
                 [InlineKeyboardButton("🔙 Back to Main", callback_data='back_to_main')]
             ]
             reply_markup = create_inline_keyboard(keyboard)
+            await context.bot.send_message(chat_id, support_message, reply_markup=reply_markup)
+
+        # New: Profile and Referral System Handlers
+        elif callback_data == 'my_profile':
+            await show_user_profile(update, context)
+
+        elif callback_data == 'referral_system':
+            await show_referral_system(update, context)
+
+        elif callback_data == 'my_referrals':
+            await show_my_referrals(update, context)
+
+        elif callback_data == 'my_bookings':
+            await show_my_bookings(update, context)
+
+        elif callback_data == 'leaderboard':
+            await show_leaderboard(update, context)
+
+        elif callback_data == 'top_referrers':
+            await show_leaderboard(update, context)  # Same as leaderboard
+
+        elif callback_data.startswith('message_teacher_'):
+            teacher_id = int(callback_data.split('_')[2])
+            teacher = next((t for t in teachers if t['id'] == teacher_id), None)
+            if teacher:
+                message = f"""💬 MESSAGE {teacher['name'].upper()} 💬
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+To message {teacher['name']} directly, please contact our admin who will connect you:
+
+📞 Admin Contact: {ADMIN_USERNAME}
+
+💡 What to include in your message:
+• Your preferred communication method
+• Questions about services
+• Scheduling preferences
+• Any special requests
+
+Our admin will facilitate the connection within 5 minutes! 🚀"""
+                
+                keyboard = [
+                    [InlineKeyboardButton("💃 Book Now", callback_data=f"book_teacher_{teacher_id}")],
+                    [InlineKeyboardButton("🔙 Back to Models", callback_data='check_teachers')]
+                ]
+                reply_markup = create_inline_keyboard(keyboard)
+                await context.bot.send_message(chat_id, message, reply_markup=reply_markup)
             await context.bot.send_message(chat_id, support_message, reply_markup=reply_markup)
 
         elif callback_data.startswith('book_teacher_'):
@@ -1181,6 +1534,8 @@ def main() -> None:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("admin", admin))
     application.add_handler(CommandHandler("help", start))
+    application.add_handler(CommandHandler("profile", show_user_profile))
+    application.add_handler(CommandHandler("referral", show_referral_system))
     application.add_handler(CallbackQueryHandler(callback_query_handler))
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
