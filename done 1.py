@@ -1,9 +1,10 @@
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 import os
+import json
 
 # Enable logging
 logging.basicConfig(
@@ -23,6 +24,13 @@ bookings = []
 pending_payments = {}
 user_states = {}
 teacher_edit_states = {}
+referrals = {}  # Store referral data
+user_profiles = {}  # Store enhanced user profiles
+referral_rewards = {}  # Store referral rewards
+
+# Referral system configuration
+REFERRAL_REWARD = 5  # $5 reward for each referral
+REFERRAL_BONUS = 10  # $10 bonus for referee
 
 # Teacher management conversation states
 TEACHER_EDIT_STATES = {
@@ -51,98 +59,301 @@ def initialize_teachers():
         },
         {
             'id': 2,
-            'name': 'Michael Chen',
-            'age': 35,
-            'subjects': ['Computer Science', 'Programming'],
+            'name': 'Emma Williams',
+            'age': 25,
+            'subjects': ['English', 'Literature'],
             'price': 30,
-            'photo': 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=400&h=400&fit=crop&crop=face',
+            'photo': 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=400&h=400&fit=crop&crop=face',
             'available': True,
-            'bio': 'Senior software engineer turned educator. Passionate about teaching modern programming and software development.',
-            'education': 'PhD Computer Science, MIT',
-            'experience': '8+ years industry + 3 years teaching',
+            'bio': 'Passionate English teacher with creative teaching methods. Makes learning fun and interactive.',
+            'education': 'BA English Literature, Oxford University',
+            'experience': '3+ years of webcam worker',
             'rating': 4.8,
-            'why_choose': 'i do with so many styels ass, footjob, fisting and etc book me love.'
+            'why_choose': 'Creative and engaging approach to make complex topics simple.'
         },
         {
             'id': 3,
-            'name': 'Emily Rodriguez',
+            'name': 'Lisa Chen',
+            'age': 29,
+            'subjects': ['Chemistry', 'Biology'],
+            'price': 28,
+            'photo': 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=400&h=400&fit=crop&crop=face',
+            'available': False,
+            'bio': 'Science enthusiast with years of research experience. Excellent at explaining complex scientific concepts.',
+            'education': 'PhD Chemistry, MIT',
+            'experience': '4+ years of webcam worker',
+            'rating': 4.9,
+            'why_choose': 'Research background brings real-world applications to learning.'
+        },
+        {
+            'id': 4,
+            'name': 'Maria Rodriguez',
             'age': 26,
-            'subjects': ['English', 'Literature'],
-            'price': 20,
+            'subjects': ['Spanish', 'French'],
+            'price': 22,
+            'photo': 'https://images.unsplash.com/photo-1489424731084-a5d8b219a5bb?w=400&h=400&fit=crop&crop=face',
+            'available': True,
+            'bio': 'Native Spanish speaker with fluency in multiple languages. Cultural insights included.',
+            'education': 'MA Linguistics, Universidad Complutense',
+            'experience': '2+ years of webcam worker',
+            'rating': 4.7,
+            'why_choose': 'Native speaker with cultural context and immersive learning.'
+        },
+        {
+            'id': 5,
+            'name': 'Sophie Taylor',
+            'age': 24,
+            'subjects': ['Art', 'Music'],
+            'price': 26,
             'photo': 'https://images.unsplash.com/photo-1438761681033-6461ffad8d80?w=400&h=400&fit=crop&crop=face',
             'available': True,
-            'bio': 'Native English speaker with expertise in literature and creative writing. Makes learning fun and interactive.',
-            'education': 'MA English Literature, Oxford University',
-            'experience': '4+ years teaching experience',
-            'rating': 4.7,
-            'why_choose': 'I create engaging lessons that improve both your language skills and confidence.'
-        },
-         {
-            'id': 3,
-            'name': 'Emily Rodriguez',
-            'age': 26,
-            'subjects': ['English', 'Literature'],
-            'price': 20,
-            'photo': 'https://images.unsplash.com/photo-1438761681033-6461ffad8d80?w=400&h=400&fit=crop&crop=face',
-            'available': True,
-            'bio': 'Native English speaker with expertise in literature and creative writing. Makes learning fun and interactive.',
-            'education': 'MA English Literature, Oxford University',
-            'experience': '4+ years teaching experience',
-            'rating': 4.7,
-            'why_choose': 'I create engaging lessons that improve both your language skills and confidence.'
-        },
+            'bio': 'Creative artist and musician. Specializes in developing artistic skills and musical talent.',
+            'education': 'BFA Fine Arts, Royal College of Art',
+            'experience': '1+ years of webcam worker',
+            'rating': 4.8,
+            'why_choose': 'Combines technical skills with creative inspiration.'
+        }
     ]
     logger.info(f"Initialized {len(teachers)} teachers")
 
-# Helper functions
 def is_admin(user_id):
     return user_id in ADMIN_IDS
 
 def create_inline_keyboard(buttons):
+    """Create better inline keyboard with improved spacing and design"""
     return InlineKeyboardMarkup(buttons)
 
-# Start command
+def generate_referral_code(user_id):
+    """Generate unique referral code for user"""
+    return f"SOL{user_id}CAM"
+
+def get_user_profile(user_id):
+    """Get or create user profile"""
+    if user_id not in user_profiles:
+        user_profiles[user_id] = {
+            'referral_code': generate_referral_code(user_id),
+            'referred_by': None,
+            'referrals_made': 0,
+            'total_earnings': 0,
+            'bookings_count': 0,
+            'join_date': datetime.now().strftime('%Y-%m-%d'),
+            'status': 'Bronze',  # Bronze, Silver, Gold, Platinum
+            'profile_complete': False
+        }
+    return user_profiles[user_id]
+
+def update_user_status(user_id):
+    """Update user status based on activity"""
+    profile = get_user_profile(user_id)
+    bookings = profile['bookings_count']
+    
+    if bookings >= 20:
+        profile['status'] = 'Platinum'
+    elif bookings >= 10:
+        profile['status'] = 'Gold'
+    elif bookings >= 5:
+        profile['status'] = 'Silver'
+    else:
+        profile['status'] = 'Bronze'
+
+def process_referral(referrer_id, referee_id):
+    """Process referral reward"""
+    referrer_profile = get_user_profile(referrer_id)
+    referee_profile = get_user_profile(referee_id)
+    
+    if referee_profile['referred_by'] is None:
+        referee_profile['referred_by'] = referrer_id
+        referrer_profile['referrals_made'] += 1
+        referrer_profile['total_earnings'] += REFERRAL_REWARD
+        
+        # Store referral reward
+        if referrer_id not in referral_rewards:
+            referral_rewards[referrer_id] = 0
+        referral_rewards[referrer_id] += REFERRAL_REWARD
+        
+        return True
+    return False
+
+# Start command with referral handling
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     chat_id = update.effective_chat.id
+    user_id = user.id
+
+    # Handle referral code
+    referrer_id = None
+    if context.args:
+        try:
+            referrer_id = int(context.args[0])
+            if referrer_id != user_id:  # Can't refer yourself
+                success = process_referral(referrer_id, user_id)
+                if success:
+                    await context.bot.send_message(
+                        referrer_id,
+                        f"🎉 Congratulations! You earned ${REFERRAL_REWARD} from a referral!\n"
+                        f"Your new referral has joined SOLCAM!"
+                    )
+
+        except ValueError:
+            pass
 
     # Store user information
-    user_states[user.id] = {
+    user_states[user_id] = {
         'username': user.username or "No username set",
         'full_name': user.full_name or "Unknown User",
         'chat_id': chat_id
     }
 
+    # Get user profile
+    profile = get_user_profile(user_id)
+    status_emoji = {'Bronze': '🥉', 'Silver': '🥈', 'Gold': '🥇', 'Platinum': '💎'}
+    
     welcome_message = f"""💋 Welcome to SOLCAM! 💋
 
-Hello {user.first_name}! 👋
+Hello {user.first_name}! 👋 {status_emoji.get(profile['status'], '🥉')}
 
-I'm your personal beutiful girls booking assistant. Here's what I can help you with:
+I'm your personal beautiful girls booking assistant. Here's what I can help you with:
 
+🔥 **Your Status**: {profile['status']} Member
+💰 **Earnings**: ${profile['total_earnings']} from referrals
+📅 **Member Since**: {profile['join_date']}
 
-🩷 For Girls:
-• Browse amazing beutiful cam girls
-• View detailed profiles
-• Book sessions
-• Secure Bitcoin payments
+🌟 **For You**:
+• 💃 Browse amazing beautiful cam girls
+• 👤 View detailed profiles  
+• 📅 Book sessions easily
+• 💳 Secure Solana payments
+• 🎁 Earn with referrals
 
+Ready to start your adventure? Choose an option below!
 
-Ready to start BOOM BOOM 💦? Choose an option below!
-
-💬 Need Support? Contact us: {ADMIN_USERNAME}"""
+💬 **Need Support?** Contact us: {ADMIN_USERNAME}"""
 
     keyboard = [
-        [InlineKeyboardButton("💋 Browse Models", callback_data='check_teachers')],
-        [InlineKeyboardButton("ℹ️ How It Works", callback_data='how_it_works')],
-        [InlineKeyboardButton("💬 Contact Support", callback_data='contact_support')]
+        [
+            InlineKeyboardButton("� Browse Models", callback_data='check_teachers'),
+            InlineKeyboardButton("👤 My Profile", callback_data='user_profile')
+        ],
+        [
+            InlineKeyboardButton("🎁 Referral System", callback_data='referral_system'),
+            InlineKeyboardButton("ℹ️ How It Works", callback_data='how_it_works')
+        ],
+        [
+            InlineKeyboardButton("💬 Contact Support", callback_data='contact_support')
+        ]
     ]
 
     # Add admin panel button only for admins
-    if is_admin(user.id):
+    if is_admin(user_id):
         keyboard.append([InlineKeyboardButton("🔧 Admin Panel", callback_data='admin')])
 
     reply_markup = create_inline_keyboard(keyboard)
     await context.bot.send_message(chat_id, welcome_message, reply_markup=reply_markup)
+
+# User profile display
+async def show_user_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    chat_id = update.effective_chat.id
+    user_id = user.id
+
+    profile = get_user_profile(user_id)
+    status_emoji = {'Bronze': '🥉', 'Silver': '🥈', 'Gold': '🥇', 'Platinum': '💎'}
+    
+    profile_message = f"""� **YOUR PROFILE** �
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🏷️ **Basic Info**:
+• Name: {user.full_name or user.first_name}
+• Username: @{user.username or 'Not set'}
+• Status: {status_emoji.get(profile['status'], '🥉')} {profile['status']} Member
+• Member Since: {profile['join_date']}
+
+📊 **Your Statistics**:
+• 📅 Total Bookings: {profile['bookings_count']}
+• 👥 Referrals Made: {profile['referrals_made']}
+• 💰 Total Earnings: ${profile['total_earnings']}
+• 🎁 Pending Rewards: ${referral_rewards.get(user_id, 0)}
+
+🔗 **Referral Info**:
+• Your Code: `{profile['referral_code']}`
+• Referred By: {'Someone special' if profile['referred_by'] else 'Direct signup'}
+
+🎯 **Next Status**: {
+    'Silver (5 bookings)' if profile['status'] == 'Bronze' else
+    'Gold (10 bookings)' if profile['status'] == 'Silver' else
+    'Platinum (20 bookings)' if profile['status'] == 'Gold' else
+    'Maximum level reached!'
+}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Use your referral code to earn rewards! 🎁"""
+
+    keyboard = [
+        [
+            InlineKeyboardButton("🎁 Share Referral", callback_data='share_referral'),
+            InlineKeyboardButton("� My Bookings", callback_data='my_bookings')
+        ],
+        [
+            InlineKeyboardButton("💰 Withdraw Earnings", callback_data='withdraw_earnings'),
+            InlineKeyboardButton("🔙 Back to Main", callback_data='back_to_main')
+        ]
+    ]
+
+    reply_markup = create_inline_keyboard(keyboard)
+    await context.bot.send_message(chat_id, profile_message, reply_markup=reply_markup, parse_mode='Markdown')
+
+# Referral system display
+async def show_referral_system(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    chat_id = update.effective_chat.id
+    user_id = user.id
+
+    profile = get_user_profile(user_id)
+    
+    referral_message = f"""🎁 **REFERRAL SYSTEM** 🎁
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+💰 **Earn Money by Referring Friends!**
+
+🔥 **How it works**:
+1. Share your referral code with friends
+2. They sign up using your code
+3. You earn ${REFERRAL_REWARD} per referral
+4. They get ${REFERRAL_BONUS} bonus credit!
+
+📊 **Your Performance**:
+• 🔗 Your Code: `{profile['referral_code']}`
+• 👥 Referrals Made: {profile['referrals_made']}
+• 💵 Total Earned: ${profile['total_earnings']}
+• 🎁 Pending: ${referral_rewards.get(user_id, 0)}
+
+🚀 **Share Your Code**:
+Send this message to friends:
+"Join SOLCAM with my referral code and get ${REFERRAL_BONUS} bonus! 
+Use /start {user_id} or click: https://t.me/{context.bot.username}?start={user_id}"
+
+🏆 **Referral Rewards**:
+• 🥉 Bronze: ${REFERRAL_REWARD} per referral
+• 🥈 Silver: ${REFERRAL_REWARD + 2} per referral
+• 🥇 Gold: ${REFERRAL_REWARD + 5} per referral  
+• 💎 Platinum: ${REFERRAL_REWARD + 10} per referral
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Start earning today! 💸"""
+
+    keyboard = [
+        [
+            InlineKeyboardButton("📤 Share Code", callback_data='share_referral_code'),
+            InlineKeyboardButton("📊 Referral Stats", callback_data='referral_stats')
+        ],
+        [
+            InlineKeyboardButton("� Withdraw", callback_data='withdraw_earnings'),
+            InlineKeyboardButton("🔙 Back", callback_data='back_to_main')
+        ]
+    ]
+
+    reply_markup = create_inline_keyboard(keyboard)
+    await context.bot.send_message(chat_id, referral_message, reply_markup=reply_markup, parse_mode='Markdown')
 
 # Admin panel
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -153,29 +364,46 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await context.bot.send_message(chat_id, '❌ Access denied. Admin only.')
         return
 
-    admin_message = f"""🔧 ADMIN CONTROL PANEL 🔧
+    total_users = len(user_profiles)
+    total_referrals = sum(profile['referrals_made'] for profile in user_profiles.values())
+    total_earnings = sum(profile['total_earnings'] for profile in user_profiles.values())
+
+    admin_message = f"""🔧 **ADMIN CONTROL PANEL** 🔧
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 👋 Welcome, Admin {user.first_name}!
 
-📊 System Status:
-  Models: {len(teachers)}
-• Bookings: {len(bookings)}
-• Pending Payments: {len(pending_payments)}
-• Active Admins: {len(ADMIN_IDS)}
+📊 **System Statistics**:
+• 👥 Total Users: {total_users}
+• 💃 Models: {len(teachers)}
+• 📅 Bookings: {len(bookings)}
+• 💰 Pending Payments: {len(pending_payments)}
+• 🎁 Total Referrals: {total_referrals}
+• 💸 Total Earnings: ${total_earnings}
 
-Choose an admin action below:"""
+🛠️ **Admin Tools**:
+Choose an action below:"""
 
     keyboard = [
-        [InlineKeyboardButton("💋 Manage Model", callback_data='manage_teachers')],
-        [InlineKeyboardButton("📋 View Bookings", callback_data='view_bookings')],
-        [InlineKeyboardButton("💰 Pending Payments", callback_data='view_payments')],
-        [InlineKeyboardButton("➕ Add New Model", callback_data='add_teacher')],
-        [InlineKeyboardButton("🔙 Back to Main", callback_data='back_to_main')]
+        [
+            InlineKeyboardButton("💃 Manage Models", callback_data='manage_teachers'),
+            InlineKeyboardButton("📋 View Bookings", callback_data='view_bookings')
+        ],
+        [
+            InlineKeyboardButton("💰 Pending Payments", callback_data='view_payments'),
+            InlineKeyboardButton("➕ Add New Model", callback_data='add_teacher')
+        ],
+        [
+            InlineKeyboardButton("👥 User Analytics", callback_data='user_analytics'),
+            InlineKeyboardButton("🎁 Referral System", callback_data='admin_referrals')
+        ],
+        [
+            InlineKeyboardButton("🔙 Back to Main", callback_data='back_to_main')
+        ]
     ]
 
     reply_markup = create_inline_keyboard(keyboard)
-    await context.bot.send_message(chat_id, admin_message, reply_markup=reply_markup)
+    await context.bot.send_message(chat_id, admin_message, reply_markup=reply_markup, parse_mode='Markdown')
 
 # Show available teachers
 async def show_available_teachers(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -346,6 +574,11 @@ async def handle_book_teacher(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     bookings.append(booking)
     pending_payments[booking_id] = booking
+    
+    # Update user profile booking count
+    profile = get_user_profile(user_id)
+    profile['bookings_count'] += 1
+    update_user_status(user_id)
 
     # Send payment instructions to student
     payment_message = f"""💰 PAYMENT INSTRUCTIONS 💰
@@ -1049,6 +1282,12 @@ Don't hesitate to reach out - we're happy to help! 😊"""
             reply_markup = create_inline_keyboard(keyboard)
             await context.bot.send_message(chat_id, support_message, reply_markup=reply_markup)
 
+        elif callback_data == 'user_profile':
+            await show_user_profile(update, context)
+
+        elif callback_data == 'referral_system':
+            await show_referral_system(update, context)
+
         elif callback_data.startswith('book_teacher_'):
             teacher_id = int(callback_data.split('_')[2])
             await handle_book_teacher(update, context, teacher_id)
@@ -1078,6 +1317,148 @@ Don't hesitate to reach out - we're happy to help! 😊"""
         elif callback_data.startswith('reject_payment_'):
             booking_id = callback_data.split('_')[2]
             await handle_reject_payment(update, context, booking_id)
+
+        elif callback_data == 'share_referral':
+            await show_referral_system(update, context)
+
+        elif callback_data == 'my_bookings':
+            await show_user_profile(update, context) # Assuming bookings are part of user profile
+
+        elif callback_data == 'withdraw_earnings':
+            user_id = user.id
+            profile = get_user_profile(user_id)
+            if profile['total_earnings'] > 0:
+                withdraw_message = f"""💰 WITHDRAW EARNINGS 💰
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+👤 Your Current Earnings: ${profile['total_earnings']}
+
+💳 Payment Details:
+• Wallet Address: {BTC_WALLET}
+• Amount: ${profile['total_earnings']}
+• Currency: Solana (Sol)
+
+📝 Next Steps:
+1. Send the exact amount of ${profile['total_earnings']} to the wallet address above.
+2. Take a screenshot of the transaction.
+3. Send the screenshot to this chat.
+4. Wait for admin confirmation.
+
+⏰ After payment verification, your earnings will be added to your account.
+
+💡 Note: Withdrawals are processed manually by the admin.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
+                await context.bot.send_message(chat_id, withdraw_message)
+            else:
+                await context.bot.send_message(chat_id, "You don't have any earnings to withdraw yet!")
+
+        elif callback_data == 'share_referral_code':
+            user_id = user.id
+            profile = get_user_profile(user_id)
+            referral_link = f"https://t.me/{context.bot.username}?start={user_id}"
+            share_message = f"""📤 SHARE YOUR REFERRAL CODE 📤
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🎁 Your Referral Code: `{profile['referral_code']}`
+
+🚀 Share this link with your friends to earn rewards!
+
+{referral_link}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Start earning today! 💸"""
+            await context.bot.send_message(chat_id, share_message)
+
+        elif callback_data == 'referral_stats':
+             user_id = user.id
+             profile = get_user_profile(user_id)
+             referred_by_display = f"@{user_profiles.get(profile['referred_by'], {}).get('username', 'Direct signup')}" if profile['referred_by'] else "Direct signup"
+
+             referral_stats_message = f"""📊 REFERRAL STATS 📊
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+👤 Your Referral Code: `{profile['referral_code']}`
+👥 Referred By: {referred_by_display}
+👥 Referrals Made: {profile['referrals_made']}
+💰 Total Earnings from Referrals: ${profile['total_earnings']}
+🎁 Pending Rewards: ${referral_rewards.get(user_id, 0)}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Start earning today! 💸"""
+             await context.bot.send_message(chat_id, referral_stats_message)
+
+         elif callback_data == 'user_analytics':
+             if not is_admin(user.id):
+                 await context.bot.send_message(chat_id, '❌ Access denied. Admin only.')
+                 return
+             
+             total_users = len(user_profiles)
+             bronze_users = sum(1 for p in user_profiles.values() if p['status'] == 'Bronze')
+             silver_users = sum(1 for p in user_profiles.values() if p['status'] == 'Silver')
+             gold_users = sum(1 for p in user_profiles.values() if p['status'] == 'Gold')
+             platinum_users = sum(1 for p in user_profiles.values() if p['status'] == 'Platinum')
+             
+             analytics_message = f"""📊 **USER ANALYTICS** 📊
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+👥 **Total Users**: {total_users}
+
+🏆 **User Status Breakdown**:
+• 🥉 Bronze: {bronze_users} users
+• 🥈 Silver: {silver_users} users  
+• 🥇 Gold: {gold_users} users
+• 💎 Platinum: {platinum_users} users
+
+📈 **Engagement Stats**:
+• Total Bookings: {len(bookings)}
+• Total Referrals: {sum(p['referrals_made'] for p in user_profiles.values())}
+• Total Earnings: ${sum(p['total_earnings'] for p in user_profiles.values())}
+• Average Bookings per User: {len(bookings) / max(total_users, 1):.1f}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
+             
+             keyboard = [
+                 [InlineKeyboardButton("🔙 Back to Admin", callback_data='admin')]
+             ]
+             reply_markup = create_inline_keyboard(keyboard)
+             await context.bot.send_message(chat_id, analytics_message, reply_markup=reply_markup, parse_mode='Markdown')
+
+         elif callback_data == 'admin_referrals':
+             if not is_admin(user.id):
+                 await context.bot.send_message(chat_id, '❌ Access denied. Admin only.')
+                 return
+             
+             total_referrals = sum(profile['referrals_made'] for profile in user_profiles.values())
+             total_rewards = sum(referral_rewards.values())
+             
+             admin_referrals_message = f"""🎁 **ADMIN REFERRAL OVERVIEW** 🎁
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📊 **System Statistics**:
+• Total Referrals: {total_referrals}
+• Total Rewards Paid: ${total_rewards}
+• Active Referrers: {len([p for p in user_profiles.values() if p['referrals_made'] > 0])}
+
+💰 **Reward Settings**:
+• Referral Reward: ${REFERRAL_REWARD}
+• Referee Bonus: ${REFERRAL_BONUS}
+
+📈 **Top Referrers**:"""
+             
+             # Get top referrers
+             top_referrers = sorted(user_profiles.items(), key=lambda x: x[1]['referrals_made'], reverse=True)[:5]
+             for i, (user_id, profile) in enumerate(top_referrers, 1):
+                 if profile['referrals_made'] > 0:
+                     admin_referrals_message += f"\n{i}. User {user_id}: {profile['referrals_made']} referrals (${profile['total_earnings']})"
+             
+             admin_referrals_message += "\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+             
+             keyboard = [
+                 [InlineKeyboardButton("🔙 Back to Admin", callback_data='admin')]
+             ]
+             reply_markup = create_inline_keyboard(keyboard)
+             await context.bot.send_message(chat_id, admin_referrals_message, reply_markup=reply_markup, parse_mode='Markdown')
 
         else:
             await context.bot.send_message(
