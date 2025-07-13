@@ -33,9 +33,9 @@ TEACHER_EDIT_STATES = {
     'WAITING_FOR_NEW_TEACHER': 'waiting_for_new_teacher'
 }
 
-# Referral rewards
-REFERRAL_BONUS = 10  # $10 bonus per successful referral
-REFERRAL_DISCOUNT = 5  # $5 discount for referred users
+# SolCam Token System
+REFERRAL_BONUS = 1  # 1 SolCam point per successful referral
+SOLCAM_POINTS_PER_HOUR = 1  # 1 SolCam point = 1 hour with cam girl
 
 # Initialize sample teacher data
 def initialize_teachers():
@@ -130,32 +130,37 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     if user.id not in user_profiles:
                         user_profiles[user.id] = {
                             'referred_by': referrer_id,
-                            'referral_bonus': REFERRAL_DISCOUNT,
+                            'solcam_points': 0,  # New user gets 0 SolCam points initially
                             'total_bookings': 0,
                             'total_spent': 0,
+                            'current_order': None,  # Track current order
                             'join_date': datetime.now().strftime("%Y-%m-%d")
                         }
                     else:
                         user_profiles[user.id]['referred_by'] = referrer_id
-                        user_profiles[user.id]['referral_bonus'] = REFERRAL_DISCOUNT
+                        if 'solcam_points' not in user_profiles[user.id]:
+                            user_profiles[user.id]['solcam_points'] = 0
+                        if 'current_order' not in user_profiles[user.id]:
+                            user_profiles[user.id]['current_order'] = None
                     
-                    # Add bonus to referrer
+                    # Add SolCam points to referrer
                     if referrer_id not in user_profiles:
                         user_profiles[referrer_id] = {
-                            'referral_bonus': REFERRAL_BONUS,
+                            'solcam_points': REFERRAL_BONUS,
                             'total_bookings': 0,
                             'total_spent': 0,
+                            'current_order': None,
                             'join_date': datetime.now().strftime("%Y-%m-%d")
                         }
                     else:
-                        user_profiles[referrer_id]['referral_bonus'] = user_profiles[referrer_id].get('referral_bonus', 0) + REFERRAL_BONUS
+                        user_profiles[referrer_id]['solcam_points'] = user_profiles[referrer_id].get('solcam_points', 0) + REFERRAL_BONUS
                     
                     # Notify referrer
                     try:
                         await context.bot.send_message(
                             referrer_id,
                             f"🎉 Great! {user.first_name} joined using your referral link!\n"
-                            f"💰 You earned ${REFERRAL_BONUS} bonus! Use it on your next booking."
+                            f"🪙 You earned {REFERRAL_BONUS} SolCam points! Use them to book cam girls for free!"
                         )
                     except:
                         pass
@@ -165,9 +170,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # Initialize user profile if not exists
     if user.id not in user_profiles:
         user_profiles[user.id] = {
-            'referral_bonus': 0,
+            'solcam_points': 0,
             'total_bookings': 0,
             'total_spent': 0,
+            'current_order': None,
             'join_date': datetime.now().strftime("%Y-%m-%d")
         }
 
@@ -187,9 +193,13 @@ I'm your personal beautiful girls booking assistant. Here's what I can help you 
 🩷 For Girls:
 • Browse amazing beautiful cam girls
 • View detailed profiles
-• Book sessions
-• Secure Bitcoin payments
-• Earn rewards through referrals
+• Book sessions with Bitcoin or SolCam points
+• Earn SolCam points through referrals
+
+🪙 SolCam Token Airdrop:
+• Earn points now for future token airdrop
+• 1 referral = 1 SolCam point
+• Use points to book girls before token launch
 
 Ready to start BOOM BOOM 💦? Choose an option below!
 
