@@ -24,6 +24,10 @@ pending_payments = {}
 user_states = {}
 teacher_edit_states = {}
 
+# NEW: Referral and Profile Systems Data Storage
+user_referrals = {}  # {user_id: {'referrer': referrer_id, 'referred_users': [user_ids], 'points': 0}}
+user_profiles = {}   # {user_id: {'orders': [order_history], 'total_spent': 0, 'join_date': datetime}}
+
 # Teacher management conversation states
 TEACHER_EDIT_STATES = {
     'WAITING_FOR_FIELD': 'waiting_for_field',
@@ -101,24 +105,119 @@ def is_admin(user_id):
 def create_inline_keyboard(buttons):
     return InlineKeyboardMarkup(buttons)
 
+# NEW: Referral and Profile Helper Functions
+def initialize_user_profile(user_id, user_info):
+    """Initialize user profile and referral data"""
+    if user_id not in user_profiles:
+        user_profiles[user_id] = {
+            'orders': [],
+            'total_spent': 0,
+            'join_date': datetime.now(),
+            'username': user_info.get('username', 'No username set'),
+            'full_name': user_info.get('full_name', 'Unknown User')
+        }
+    
+    if user_id not in user_referrals:
+        user_referrals[user_id] = {
+            'referrer': None,
+            'referred_users': [],
+            'points': 0
+        }
+
+def process_referral(user_id, referrer_id):
+    """Process a referral when user joins via referral link"""
+    if referrer_id and referrer_id != user_id and referrer_id in user_referrals:
+        # Set referrer for new user
+        user_referrals[user_id]['referrer'] = referrer_id
+        
+        # Add to referrer's referred users list
+        if user_id not in user_referrals[referrer_id]['referred_users']:
+            user_referrals[referrer_id]['referred_users'].append(user_id)
+            user_referrals[referrer_id]['points'] += 1
+            return True
+    return False
+
+def get_user_points(user_id):
+    """Get user's current points"""
+    return user_referrals.get(user_id, {}).get('points', 0)
+
+def deduct_points(user_id, points):
+    """Deduct points from user account"""
+    if user_id in user_referrals and user_referrals[user_id]['points'] >= points:
+        user_referrals[user_id]['points'] -= points
+        return True
+    return False
+
+def add_points(user_id, points):
+    """Add points to user account"""
+    if user_id in user_referrals:
+        user_referrals[user_id]['points'] += points
+        return True
+    return False
+
+def transfer_points(from_user_id, to_user_id, points):
+    """Transfer points between users"""
+    if (from_user_id in user_referrals and to_user_id in user_referrals and 
+        user_referrals[from_user_id]['points'] >= points):
+        user_referrals[from_user_id]['points'] -= points
+        user_referrals[to_user_id]['points'] += points
+        return True
+    return False
+
+def add_order_to_profile(user_id, order_data):
+    """Add order to user's profile"""
+    if user_id in user_profiles:
+        user_profiles[user_id]['orders'].append(order_data)
+        user_profiles[user_id]['total_spent'] += order_data.get('price', 0)
+
+def get_user_last_order(user_id):
+    """Get user's last order"""
+    if user_id in user_profiles and user_profiles[user_id]['orders']:
+        return user_profiles[user_id]['orders'][-1]
+    return None
+
 # Start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     chat_id = update.effective_chat.id
 
     # Store user information
-    user_states[user.id] = {
+    user_info = {
         'username': user.username or "No username set",
         'full_name': user.full_name or "Unknown User",
         'chat_id': chat_id
     }
+    user_states[user.id] = user_info
 
+    # NEW: Initialize user profile and handle referrals
+    initialize_user_profile(user.id, user_info)
+    
+    # Handle referral if present in the command
+    referral_processed = False
+    if context.args:
+        try:
+            referrer_id = int(context.args[0])
+            if process_referral(user.id, referrer_id):
+                referral_processed = True
+                # Notify referrer
+                try:
+                    await context.bot.send_message(
+                        referrer_id,
+                        f"🎉 Congratulations! {user.first_name} joined using your referral link!\n"
+                        f"💰 You earned 1 point! Current points: {get_user_points(referrer_id)}"
+                    )
+                except:
+                    pass
+        except:
+            pass
+
+    user_points = get_user_points(user.id)
+    
     welcome_message = f"""💋 Welcome to SOLCAM! 💋
 
 Hello {user.first_name}! 👋
 
 I'm your personal beutiful girls booking assistant. Here's what I can help you with:
-
 
 🩷 For Girls:
 • Browse amazing beutiful cam girls
@@ -126,6 +225,8 @@ I'm your personal beutiful girls booking assistant. Here's what I can help you w
 • Book sessions
 • Secure Bitcoin payments
 
+💰 Your Points: {user_points}
+{f"🎉 Welcome bonus! You joined via referral!" if referral_processed else ""}
 
 Ready to start BOOM BOOM 💦? Choose an option below!
 
@@ -133,8 +234,9 @@ Ready to start BOOM BOOM 💦? Choose an option below!
 
     keyboard = [
         [InlineKeyboardButton("💋 Browse Models", callback_data='check_teachers')],
-        [InlineKeyboardButton("ℹ️ How It Works", callback_data='how_it_works')],
-        [InlineKeyboardButton("💬 Contact Support", callback_data='contact_support')]
+        [InlineKeyboardButton("👤 My Profile", callback_data='show_profile')],
+        [InlineKeyboardButton("ℹ️ Help", callback_data='help_menu')],
+        [InlineKeyboardButton("🔗 Refer Friends", callback_data='referral_info')]
     ]
 
     # Add admin panel button only for admins
@@ -143,6 +245,278 @@ Ready to start BOOM BOOM 💦? Choose an option below!
 
     reply_markup = create_inline_keyboard(keyboard)
     await context.bot.send_message(chat_id, welcome_message, reply_markup=reply_markup)
+
+# NEW: Profile System Functions
+async def show_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    chat_id = update.effective_chat.id
+    
+    # Get user data
+    user_points = get_user_points(user.id)
+    user_profile = user_profiles.get(user.id, {})
+    user_referral = user_referrals.get(user.id, {})
+    
+    # Get last order
+    last_order = get_user_last_order(user.id)
+    
+    # Format last order info
+    if last_order:
+        order_status = last_order.get('status', 'Unknown')
+        order_girl = last_order.get('teacher_name', 'Unknown')
+        order_date = last_order.get('created_at', datetime.now()).strftime('%Y-%m-%d %H:%M')
+        order_price = last_order.get('price', 0)
+        
+        last_order_info = f"""📋 LAST ORDER:
+• Girl: {order_girl}
+• Status: {order_status.title()}
+• Date: {order_date}
+• Price: ${order_price}"""
+    else:
+        last_order_info = "📋 LAST ORDER:\n• No orders yet"
+    
+    # Calculate referral stats
+    total_referrals = len(user_referral.get('referred_users', []))
+    join_date = user_profile.get('join_date', datetime.now()).strftime('%Y-%m-%d')
+    total_spent = user_profile.get('total_spent', 0)
+    
+    profile_message = f"""👤 YOUR PROFILE 👤
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+💼 USER INFO:
+• Name: {user_profile.get('full_name', 'Unknown')}
+• Username: @{user_profile.get('username', 'No username')}
+• User ID: {user.id}
+• Join Date: {join_date}
+
+💰 FINANCIAL:
+• Current Points: {user_points}
+• Total Spent: ${total_spent}
+
+🔗 REFERRAL STATS:
+• Total Referrals: {total_referrals}
+• Referral Link: /start {user.id}
+
+{last_order_info}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💡 Use points to book girls or transfer to friends!"""
+
+    keyboard = [
+        [InlineKeyboardButton("💸 Transfer Points", callback_data='transfer_points')],
+        [InlineKeyboardButton("📊 Order History", callback_data='order_history')],
+        [InlineKeyboardButton("🔗 Share Referral", callback_data='share_referral')],
+        [InlineKeyboardButton("🔙 Back to Main", callback_data='back_to_main')]
+    ]
+    
+    reply_markup = create_inline_keyboard(keyboard)
+    await context.bot.send_message(chat_id, profile_message, reply_markup=reply_markup)
+
+# NEW: Help Menu System
+async def help_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    
+    help_message = """ℹ️ HELP CENTER ℹ️
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🤝 Choose what you need help with:"""
+
+    keyboard = [
+        [InlineKeyboardButton("🎯 How It Works", callback_data='how_it_works')],
+        [InlineKeyboardButton("💬 Contact Support", callback_data='contact_support')],
+        [InlineKeyboardButton("💃 Become Model", callback_data='become_model')],
+        [InlineKeyboardButton("🔙 Back to Main", callback_data='back_to_main')]
+    ]
+    
+    reply_markup = create_inline_keyboard(keyboard)
+    await context.bot.send_message(chat_id, help_message, reply_markup=reply_markup)
+
+# NEW: Referral Info Function
+async def referral_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    chat_id = update.effective_chat.id
+    
+    user_points = get_user_points(user.id)
+    user_referral = user_referrals.get(user.id, {})
+    total_referrals = len(user_referral.get('referred_users', []))
+    
+    referral_message = f"""🔗 REFERRAL SYSTEM 🔗
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+💰 YOUR STATS:
+• Current Points: {user_points}
+• Total Referrals: {total_referrals}
+
+🎯 HOW IT WORKS:
+• Share your referral link with friends
+• When they join, you get 1 point
+• 1 point = $1 discount on bookings
+• Points can be used to book girls
+• Points can be transferred to friends
+
+🔗 YOUR REFERRAL LINK:
+/start {user.id}
+
+💡 POINT USES:
+• Book girls with points instead of payment
+• Transfer points to other users
+• Hold points for future bookings
+
+Ready to start earning? Share your link now! 🚀"""
+
+    keyboard = [
+        [InlineKeyboardButton("📤 Share Link", callback_data='share_referral')],
+        [InlineKeyboardButton("💸 Transfer Points", callback_data='transfer_points')],
+        [InlineKeyboardButton("🔙 Back to Main", callback_data='back_to_main')]
+    ]
+    
+    reply_markup = create_inline_keyboard(keyboard)
+    await context.bot.send_message(chat_id, referral_message, reply_markup=reply_markup)
+
+# NEW: Become Model Guide
+async def become_model(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    
+    model_guide = f"""💃 BECOME A MODEL 💃
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🌟 JOIN OUR AMAZING TEAM!
+
+💼 REQUIREMENTS:
+• 18+ years old
+• Professional attitude
+• Good communication skills
+• Reliable internet connection
+
+💰 BENEFITS:
+• Flexible working hours
+• Competitive rates
+• Professional support
+• Secure platform
+
+📋 APPLICATION PROCESS:
+1. Contact our admin
+2. Submit your application
+3. Quick verification process
+4. Start earning!
+
+💬 READY TO START?
+Contact our admin for more details: {ADMIN_USERNAME}
+
+We're looking forward to working with you! 🎉"""
+
+    keyboard = [
+        [InlineKeyboardButton("📱 Contact Admin", url=f"https://t.me/{ADMIN_USERNAME.replace('@', '')}")],
+        [InlineKeyboardButton("🔙 Back to Help", callback_data='help_menu')]
+    ]
+    
+    reply_markup = create_inline_keyboard(keyboard)
+    await context.bot.send_message(chat_id, model_guide, reply_markup=reply_markup)
+
+# NEW: Point Transfer Functions
+async def transfer_points_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    chat_id = update.effective_chat.id
+    
+    user_points = get_user_points(user.id)
+    
+    if user_points == 0:
+        await context.bot.send_message(
+            chat_id,
+            "❌ You don't have any points to transfer.\n💡 Refer friends to earn points!"
+        )
+        return
+    
+    transfer_message = f"""💸 TRANSFER POINTS 💸
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+💰 Your Current Points: {user_points}
+
+📝 HOW TO TRANSFER:
+Send a message with the format:
+transfer [amount] [user_id]
+
+Example: transfer 5 123456789
+
+💡 NOTES:
+• You can only transfer points you have
+• Transfers are instant
+• Minimum transfer: 1 point
+• Cannot transfer to yourself
+
+Type your transfer command now or go back:"""
+
+    keyboard = [
+        [InlineKeyboardButton("🔙 Back to Profile", callback_data='show_profile')]
+    ]
+    
+    reply_markup = create_inline_keyboard(keyboard)
+    await context.bot.send_message(chat_id, transfer_message, reply_markup=reply_markup)
+
+# NEW: Order History Function
+async def order_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    chat_id = update.effective_chat.id
+    
+    user_profile = user_profiles.get(user.id, {})
+    orders = user_profile.get('orders', [])
+    
+    if not orders:
+        await context.bot.send_message(
+            chat_id,
+            "📋 No orders found.\n💡 Start browsing models to place your first order!"
+        )
+        return
+    
+    history_message = "📊 YOUR ORDER HISTORY 📊\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    
+    for i, order in enumerate(orders[-5:], 1):  # Show last 5 orders
+        order_date = order.get('created_at', datetime.now()).strftime('%Y-%m-%d %H:%M')
+        history_message += f"""📋 Order #{i}
+• Girl: {order.get('teacher_name', 'Unknown')}
+• Status: {order.get('status', 'Unknown').title()}
+• Price: ${order.get('price', 0)}
+• Date: {order_date}
+• ID: {order.get('id', 'N/A')}
+
+"""
+    
+    total_spent = user_profile.get('total_spent', 0)
+    history_message += f"💰 Total Spent: ${total_spent}"
+    
+    keyboard = [
+        [InlineKeyboardButton("🔙 Back to Profile", callback_data='show_profile')]
+    ]
+    
+    reply_markup = create_inline_keyboard(keyboard)
+    await context.bot.send_message(chat_id, history_message, reply_markup=reply_markup)
+
+# NEW: Share Referral Function
+async def share_referral(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    chat_id = update.effective_chat.id
+    
+    referral_link = f"https://t.me/{context.bot.username}?start={user.id}"
+    
+    share_message = f"""🔗 SHARE YOUR REFERRAL LINK 🔗
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Your referral link:
+{referral_link}
+
+📤 SHARE MESSAGE:
+"Join SOLCAM and get access to amazing models! Use my link to get started: {referral_link}"
+
+💡 Every friend who joins = 1 point for you!
+Points can be used to book girls or transfer to friends.
+
+Happy sharing! 🎉"""
+
+    keyboard = [
+        [InlineKeyboardButton("🔙 Back to Profile", callback_data='show_profile')]
+    ]
+    
+    reply_markup = create_inline_keyboard(keyboard)
+    await context.bot.send_message(chat_id, share_message, reply_markup=reply_markup)
 
 # Admin panel
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -330,6 +704,141 @@ async def handle_book_teacher(update: Update, context: ContextTypes.DEFAULT_TYPE
         await context.bot.send_message(chat_id, '❌ This Model is currently unavailable.')
         return
 
+    # NEW: Check user points and offer payment options
+    user_points = get_user_points(user_id)
+    teacher_price = teacher['price']
+    
+    # Initialize user profile if not exists
+    initialize_user_profile(user_id, user_info)
+    
+    # Show payment options
+    payment_options_message = f"""💰 BOOKING PAYMENT OPTIONS 💰
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+💋 Booking Details:
+• Model: {teacher['name']}
+• Rate: ${teacher_price}/hour
+• Your Points: {user_points}
+
+💳 Choose Payment Method:"""
+
+    keyboard = []
+    
+    # Add points payment option if user has enough points
+    if user_points >= teacher_price:
+        keyboard.append([InlineKeyboardButton(f"💎 Pay with Points ({teacher_price} points)", callback_data=f"pay_points_{teacher_id}")])
+    
+    # Add crypto payment option
+    keyboard.append([InlineKeyboardButton("💰 Pay with Solana", callback_data=f"pay_crypto_{teacher_id}")])
+    
+    # Add partial points payment if user has some points but not enough
+    if user_points > 0 and user_points < teacher_price:
+        remaining = teacher_price - user_points
+        keyboard.append([InlineKeyboardButton(f"💎+💰 Use Points + ${remaining} Solana", callback_data=f"pay_mixed_{teacher_id}")])
+    
+    keyboard.append([InlineKeyboardButton("🔙 Back to Models", callback_data="check_teachers")])
+    
+    reply_markup = create_inline_keyboard(keyboard)
+    await context.bot.send_message(chat_id, payment_options_message, reply_markup=reply_markup)
+
+# NEW: Handle Points Payment
+async def handle_points_payment(update: Update, context: ContextTypes.DEFAULT_TYPE, teacher_id: int) -> None:
+    user = update.effective_user
+    chat_id = update.effective_chat.id
+    user_id = user.id
+
+    teacher = next((t for t in teachers if t['id'] == teacher_id), None)
+    if not teacher:
+        await context.bot.send_message(chat_id, '❌ Model not found.')
+        return
+
+    user_points = get_user_points(user_id)
+    teacher_price = teacher['price']
+
+    if user_points < teacher_price:
+        await context.bot.send_message(
+            chat_id,
+            f"❌ Insufficient points! You have {user_points} points but need {teacher_price} points.\n"
+            f"💡 Refer friends to earn more points!"
+        )
+        return
+
+    # Deduct points
+    if deduct_points(user_id, teacher_price):
+        # Create confirmed booking
+        booking_id = str(uuid.uuid4())[:8]
+        user_info = user_states.get(user_id, {})
+        
+        booking = {
+            'id': booking_id,
+            'student_id': user_id,
+            'student_username': user_info.get('username', 'No username set'),
+            'student_name': user_info.get('full_name', 'Unknown User'),
+            'teacher_id': teacher_id,
+            'teacher_name': teacher['name'],
+            'price': teacher_price,
+            'status': 'confirmed',
+            'payment_method': 'points',
+            'created_at': datetime.now(),
+            'confirmed_at': datetime.now()
+        }
+
+        bookings.append(booking)
+        add_order_to_profile(user_id, booking)
+
+        # Notify student
+        success_message = f"""✅ BOOKING CONFIRMED! ✅
+
+🎉 Payment successful! {teacher_price} points deducted.
+
+📋 Booking Details:
+• Model: {teacher['name']}
+• Booking ID: {booking_id}
+• Payment: {teacher_price} points
+• Status: ✅ Confirmed
+
+💰 Remaining Points: {get_user_points(user_id)}
+
+📞 Your model will contact you within 5 minutes!
+
+Thank you for choosing SOLCAM! 💃"""
+
+        await context.bot.send_message(chat_id, success_message)
+
+        # Notify admin
+        admin_notification = f"""✅ POINTS BOOKING CONFIRMED! ✅
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+👤 USER: {booking['student_name']}
+💃 MODEL: {teacher['name']}
+💰 PAID: {teacher_price} points
+🆔 Booking ID: {booking_id}
+📅 Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+⚡ ACTION: Contact user to proceed with session!"""
+
+        for admin_id in ADMIN_IDS:
+            try:
+                await context.bot.send_message(admin_id, admin_notification)
+            except Exception as e:
+                logger.error(f"Failed to send admin notification to {admin_id}: {e}")
+
+# NEW: Handle Crypto Payment (modified original)
+async def handle_crypto_payment(update: Update, context: ContextTypes.DEFAULT_TYPE, teacher_id: int) -> None:
+    user = update.effective_user
+    chat_id = update.effective_chat.id
+    user_id = user.id
+
+    teacher = next((t for t in teachers if t['id'] == teacher_id), None)
+    if not teacher:
+        await context.bot.send_message(chat_id, '❌ Model not found.')
+        return
+
+    # Get user info
+    user_info = user_states.get(user_id, {})
+    student_username = user_info.get('username', 'No username set')
+    student_full_name = user_info.get('full_name', 'Unknown User')
+
     # Create booking
     booking_id = str(uuid.uuid4())[:8]
     booking = {
@@ -341,6 +850,7 @@ async def handle_book_teacher(update: Update, context: ContextTypes.DEFAULT_TYPE
         'teacher_name': teacher['name'],
         'price': teacher['price'],
         'status': 'pending_payment',
+        'payment_method': 'crypto',
         'created_at': datetime.now()
     }
 
@@ -430,6 +940,9 @@ async def handle_confirm_payment(update: Update, context: ContextTypes.DEFAULT_T
     booking['status'] = 'confirmed'
     booking['confirmed_at'] = datetime.now()
     booking['confirmed_by'] = user.id
+
+    # NEW: Add order to user profile
+    add_order_to_profile(booking['student_id'], booking)
 
     # Remove from pending payments
     del pending_payments[booking_id]
@@ -1049,6 +1562,35 @@ Don't hesitate to reach out - we're happy to help! 😊"""
             reply_markup = create_inline_keyboard(keyboard)
             await context.bot.send_message(chat_id, support_message, reply_markup=reply_markup)
 
+        elif callback_data == 'show_profile':
+            await show_profile(update, context)
+
+        elif callback_data == 'transfer_points':
+            await transfer_points_menu(update, context)
+
+        elif callback_data == 'order_history':
+            await order_history(update, context)
+
+        elif callback_data == 'share_referral':
+            await share_referral(update, context)
+
+        elif callback_data == 'become_model':
+            await become_model(update, context)
+
+        elif callback_data == 'help_menu':
+            await help_menu(update, context)
+
+        elif callback_data == 'referral_info':
+            await referral_info(update, context)
+
+        elif callback_data.startswith('pay_points_'):
+            teacher_id = int(callback_data.split('_')[2])
+            await handle_points_payment(update, context, teacher_id)
+
+        elif callback_data.startswith('pay_crypto_'):
+            teacher_id = int(callback_data.split('_')[2])
+            await handle_crypto_payment(update, context, teacher_id)
+
         elif callback_data.startswith('book_teacher_'):
             teacher_id = int(callback_data.split('_')[2])
             await handle_book_teacher(update, context, teacher_id)
@@ -1157,6 +1699,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await handle_teacher_editing(update, context, text)
         return
 
+    # NEW: Handle point transfer commands
+    if text.lower().startswith('transfer '):
+        await handle_point_transfer(update, context, text)
+        return
+
     # Default response for regular text
     await context.bot.send_message(
         chat_id,
@@ -1164,6 +1711,95 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         f"Use the menu buttons to navigate the bot.\n"
         f"Need help? Contact: {ADMIN_USERNAME}"
     )
+
+# NEW: Handle Point Transfer Command
+async def handle_point_transfer(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
+    user = update.effective_user
+    chat_id = update.effective_chat.id
+    user_id = user.id
+
+    try:
+        # Parse transfer command: "transfer amount user_id"
+        parts = text.split()
+        if len(parts) != 3:
+            await context.bot.send_message(
+                chat_id,
+                "❌ Invalid format! Use: transfer [amount] [user_id]\n"
+                "Example: transfer 5 123456789"
+            )
+            return
+
+        amount = int(parts[1])
+        target_user_id = int(parts[2])
+
+        # Validate transfer
+        if amount <= 0:
+            await context.bot.send_message(chat_id, "❌ Amount must be positive!")
+            return
+
+        if target_user_id == user_id:
+            await context.bot.send_message(chat_id, "❌ Cannot transfer to yourself!")
+            return
+
+        if target_user_id not in user_referrals:
+            await context.bot.send_message(chat_id, "❌ Target user not found!")
+            return
+
+        user_points = get_user_points(user_id)
+        if user_points < amount:
+            await context.bot.send_message(
+                chat_id,
+                f"❌ Insufficient points! You have {user_points} points but trying to transfer {amount} points."
+            )
+            return
+
+        # Execute transfer
+        if transfer_points(user_id, target_user_id, amount):
+            # Get target user info
+            target_profile = user_profiles.get(target_user_id, {})
+            target_name = target_profile.get('full_name', 'Unknown User')
+
+            # Notify sender
+            await context.bot.send_message(
+                chat_id,
+                f"✅ Transfer Successful!\n\n"
+                f"💸 Transferred: {amount} points\n"
+                f"👤 To: {target_name} (ID: {target_user_id})\n"
+                f"💰 Your remaining points: {get_user_points(user_id)}"
+            )
+
+            # Notify receiver
+            try:
+                sender_profile = user_profiles.get(user_id, {})
+                sender_name = sender_profile.get('full_name', 'Unknown User')
+                
+                await context.bot.send_message(
+                    target_user_id,
+                    f"🎉 Points Received!\n\n"
+                    f"💎 Amount: {amount} points\n"
+                    f"👤 From: {sender_name} (ID: {user_id})\n"
+                    f"💰 Your total points: {get_user_points(target_user_id)}\n\n"
+                    f"Use /start to access your profile!"
+                )
+            except Exception as e:
+                logger.error(f"Failed to notify receiver {target_user_id}: {e}")
+                await context.bot.send_message(
+                    chat_id,
+                    f"✅ Transfer completed, but couldn't notify the receiver."
+                )
+
+        else:
+            await context.bot.send_message(chat_id, "❌ Transfer failed! Please try again.")
+
+    except ValueError:
+        await context.bot.send_message(
+            chat_id,
+            "❌ Invalid format! Use: transfer [amount] [user_id]\n"
+            "Example: transfer 5 123456789"
+        )
+    except Exception as e:
+        logger.error(f"Error in point transfer: {e}")
+        await context.bot.send_message(chat_id, "❌ Transfer failed! Please try again.")
 
 # Error handler
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
