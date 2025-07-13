@@ -227,6 +227,11 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await context.bot.send_message(chat_id, '❌ Access denied. Admin only.')
         return
 
+    # Calculate SolCam points stats
+    total_points_issued = sum(profile.get('solcam_points', 0) for profile in user_profiles.values())
+    points_bookings = [b for b in bookings if b.get('payment_method') == 'solcam_points']
+    pending_points_bookings = [b for b in bookings if b.get('payment_method') == 'solcam_points' and b.get('status') == 'pending_admin_approval']
+
     admin_message = f"""🔧 ADMIN CONTROL PANEL 🔧
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -234,16 +239,22 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 📊 System Status:
 • Models: {len(teachers)}
-• Bookings: {len(bookings)}
-• Pending Payments: {len(pending_payments)}
+• Total Bookings: {len(bookings)}
+• Bitcoin Pending: {len(pending_payments)}
+• Points Pending: {len(pending_points_bookings)}
 • Active Admins: {len(ADMIN_IDS)}
+
+🪙 SolCam Token Stats:
+• Total Points Issued: {total_points_issued} SolCam
+• Points Bookings: {len(points_bookings)}
+• Registered Users: {len(user_profiles)}
 
 Choose an admin action below:"""
 
     keyboard = [
         [InlineKeyboardButton("💋 Manage Model", callback_data='manage_teachers')],
-        [InlineKeyboardButton("📋 View Bookings", callback_data='view_bookings')],
-        [InlineKeyboardButton("💰 Pending Payments", callback_data='view_payments')],
+        [InlineKeyboardButton("📋 View Bookings", callback_data='view_bookings'), InlineKeyboardButton("🪙 Points Bookings", callback_data='view_points_bookings')],
+        [InlineKeyboardButton("💰 Bitcoin Pending", callback_data='view_payments'), InlineKeyboardButton("🔄 Points Pending", callback_data='view_points_pending')],
         [InlineKeyboardButton("➕ Add New Model", callback_data='add_teacher')],
         [InlineKeyboardButton("🔙 Back to Main", callback_data='back_to_main')]
     ]
@@ -417,55 +428,98 @@ async def handle_book_teacher(update: Update, context: ContextTypes.DEFAULT_TYPE
         await context.bot.send_message(chat_id, '❌ This Model is currently unavailable.')
         return
 
-    # Calculate final amount with referral bonus
-    original_amount = teacher['price']
-    referral_bonus = user_profiles.get(user_id, {}).get('referral_bonus', 0)
-    discount_applied = min(referral_bonus, original_amount)  # Can't discount more than the price
-    final_amount = original_amount - discount_applied
+    # Check user's SolCam points
+    user_points = user_profiles.get(user_id, {}).get('solcam_points', 0)
+    points_needed = teacher['price'] * SOLCAM_POINTS_PER_HOUR  # 1 point per hour
     
     # Create booking
     booking_id = str(uuid.uuid4())[:8]
-    booking = {
-        'id': booking_id,
-        'student_id': user_id,
-        'student_username': student_username,
-        'student_name': student_full_name,
-        'teacher_id': teacher_id,
-        'teacher_name': teacher['name'],
-        'price': final_amount,
-        'original_price': original_amount,
-        'discount_applied': discount_applied,
-        'status': 'pending_payment',
-        'created_at': datetime.now()
-    }
+    
+    # Determine payment method
+    if user_points >= points_needed:
+        # User has enough SolCam points
+        payment_method = 'solcam_points'
+        booking = {
+            'id': booking_id,
+            'student_id': user_id,
+            'student_username': student_username,
+            'student_name': student_full_name,
+            'teacher_id': teacher_id,
+            'teacher_name': teacher['name'],
+            'price': teacher['price'],
+            'points_cost': points_needed,
+            'payment_method': 'solcam_points',
+            'status': 'pending_admin_approval',
+            'created_at': datetime.now()
+        }
+        
+        # Update user's current order
+        user_profiles[user_id]['current_order'] = {
+            'booking_id': booking_id,
+            'teacher_name': teacher['name'],
+            'status': 'pending_admin_approval',
+            'payment_method': 'solcam_points',
+            'points_used': points_needed
+        }
+        
+        payment_message = f"""🪙 SOLCAM POINTS BOOKING 🪙
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    bookings.append(booking)
-    pending_payments[booking_id] = booking
+✅ BOOKING CONFIRMED WITH POINTS!
 
-    # Update user's referral bonus (subtract used amount)
-    if discount_applied > 0:
-        user_profiles[user_id]['referral_bonus'] -= discount_applied
+📋 BOOKING DETAILS:
+• Model: {teacher['name']}
+• Cost: {points_needed} SolCam Points
+• Your Points: {user_points} SolCam
+• Remaining: {user_points - points_needed} SolCam
+• Booking ID: {booking_id}
 
-    # Send payment instructions to student
-    discount_text = f"\n🎁 Referral Discount: -${discount_applied}" if discount_applied > 0 else ""
-    payment_message = f"""💰 PAYMENT INSTRUCTIONS 💰
+⏰ Your booking is pending admin approval.
+📞 You'll be contacted within 5 minutes after approval!
+
+🪙 Thank you for using SolCam points! 
+Future token holders get priority! 🚀"""
+        
+    else:
+        # User needs to pay with Bitcoin
+        payment_method = 'bitcoin'
+        booking = {
+            'id': booking_id,
+            'student_id': user_id,
+            'student_username': student_username,
+            'student_name': student_full_name,
+            'teacher_id': teacher_id,
+            'teacher_name': teacher['name'],
+            'price': teacher['price'],
+            'payment_method': 'bitcoin',
+            'status': 'pending_payment',
+            'created_at': datetime.now()
+        }
+        
+        # Update user's current order
+        user_profiles[user_id]['current_order'] = {
+            'booking_id': booking_id,
+            'teacher_name': teacher['name'],
+            'status': 'pending_payment',
+            'payment_method': 'bitcoin',
+            'price': teacher['price']
+        }
+        
+        payment_message = f"""💰 BITCOIN PAYMENT REQUIRED 💰
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 📋 BOOKING DETAILS:
 • Model: {teacher['name']}
-• Original Price: ${original_amount}/hour{discount_text}
-• Final Amount: ${final_amount}/hour
-
-💳 PAYMENT DETAILS:
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-💋 Booking Details:
-• Model: {teacher['name']}
-• Rate: ${final_amount} /hour
+• Price: ${teacher['price']}/hour
 • Booking ID: {booking_id}
 
+🪙 SolCam Points Status:
+• You have: {user_points} SolCam points
+• Needed: {points_needed} SolCam points
+• Earn more points by referring friends! 
+
 💳 Payment:
-Send ${final_amount} worth of Solana to this wallet:
+Send ${teacher['price']} worth of Solana to this wallet:
 
 {BTC_WALLET}
 
@@ -476,12 +530,18 @@ Send ${final_amount} worth of Solana to this wallet:
 4. Wait for admin confirmation
 
 ⏰ After payment verification, your teacher will contact you within 5 minutes."""
+
+    bookings.append(booking)
+    if payment_method == 'bitcoin':
+        pending_payments[booking_id] = booking
+
     await context.bot.send_message(chat_id, payment_message)
 
     # Notify admin about new booking
     username_display = f"@{student_username}" if student_username != "No username set" else "❌ No username set"
 
-    admin_notification = f"""🔔 NEW BOOKING ALERT! 🔔
+    if payment_method == 'solcam_points':
+        admin_notification = f"""🪙 NEW SOLCAM POINTS BOOKING! 🪙
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 👤 USER INFORMATION:
@@ -492,14 +552,43 @@ Send ${final_amount} worth of Solana to this wallet:
 
 💃 MODEL BOOKED:
 🌟 {teacher['name']}
-💰 Original Rate: ${original_amount}/hour
-💰 Final Rate: ${final_amount}/hour
-🎁 Discount Applied: ${discount_applied}
+🪙 Cost: {points_needed} SolCam Points
+💰 Rate: ${teacher['price']}/hour
 
 📊 BOOKING DETAILS:
 🆔 Booking ID: {booking_id}
 📅 Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-⏳ Status: Waiting for payment
+⏳ Status: Pending Admin Approval
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📞 CONTACT USER:
+• Use username: {username_display}
+• Or message directly via User ID: {user_id}
+
+⚡ ACTION REQUIRED: Approve or reject SolCam points booking!"""
+
+        keyboard = [
+            [InlineKeyboardButton("✅ Approve Points Booking", callback_data=f"approve_points_{booking_id}")],
+            [InlineKeyboardButton("❌ Reject Points Booking", callback_data=f"reject_points_{booking_id}")]
+        ]
+    else:
+        admin_notification = f"""🔔 NEW BITCOIN BOOKING! 🔔
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+👤 USER INFORMATION:
+📝 Name: {student_full_name}
+🏷️ Username: {username_display}
+🆔 User ID: {user_id}
+💬 Chat ID: {chat_id}
+
+💃 MODEL BOOKED:
+🌟 {teacher['name']}
+💰 Rate: ${teacher['price']}/hour
+
+📊 BOOKING DETAILS:
+🆔 Booking ID: {booking_id}
+📅 Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+⏳ Status: Waiting for payment screenshot
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📞 CONTACT USER:
@@ -508,10 +597,11 @@ Send ${final_amount} worth of Solana to this wallet:
 
 ⚡ ACTION REQUIRED: Wait for payment screenshot!"""
 
-    keyboard = [
-        [InlineKeyboardButton("✅ Confirm Payment", callback_data=f"confirm_payment_{booking_id}")],
-        [InlineKeyboardButton("❌ Reject Payment", callback_data=f"reject_payment_{booking_id}")]
-    ]
+        keyboard = [
+            [InlineKeyboardButton("✅ Confirm Payment", callback_data=f"confirm_payment_{booking_id}")],
+            [InlineKeyboardButton("❌ Reject Payment", callback_data=f"reject_payment_{booking_id}")]
+        ]
+
     reply_markup = create_inline_keyboard(keyboard)
 
     # Send to all admins
@@ -544,6 +634,9 @@ async def handle_confirm_payment(update: Update, context: ContextTypes.DEFAULT_T
     if user_id in user_profiles:
         user_profiles[user_id]['total_bookings'] += 1
         user_profiles[user_id]['total_spent'] += booking['price']
+        # Update current order status
+        if user_profiles[user_id].get('current_order'):
+            user_profiles[user_id]['current_order']['status'] = 'confirmed'
 
     # Remove from pending payments
     del pending_payments[booking_id]
@@ -592,11 +685,10 @@ async def handle_reject_payment(update: Update, context: ContextTypes.DEFAULT_TY
     booking['rejected_at'] = datetime.now()
     booking['rejected_by'] = user.id
 
-    # Return referral bonus if it was used
-    if booking.get('discount_applied', 0) > 0:
-        user_id = booking['student_id']
-        if user_id in user_profiles:
-            user_profiles[user_id]['referral_bonus'] += booking['discount_applied']
+    # Update user's current order status
+    user_id = booking['student_id']
+    if user_id in user_profiles and user_profiles[user_id].get('current_order'):
+        user_profiles[user_id]['current_order']['status'] = 'rejected'
 
     # Remove from pending payments
     del pending_payments[booking_id]
@@ -622,6 +714,119 @@ We're here to help! 🤝"""
     await context.bot.send_message(
         update.effective_chat.id,
         f"❌ Payment rejected for booking {booking_id}. Student has been notified."
+    )
+
+# Handle SolCam points booking approval
+async def handle_approve_points_booking(update: Update, context: ContextTypes.DEFAULT_TYPE, booking_id: str) -> None:
+    user = update.effective_user
+
+    if not is_admin(user.id):
+        await context.bot.send_message(update.effective_chat.id, '❌ Access denied. Admin only.')
+        return
+
+    # Find booking in bookings list
+    booking = next((b for b in bookings if b['id'] == booking_id), None)
+    if not booking:
+        await context.bot.send_message(update.effective_chat.id, '❌ Booking not found.')
+        return
+
+    if booking['payment_method'] != 'solcam_points':
+        await context.bot.send_message(update.effective_chat.id, '❌ This is not a SolCam points booking.')
+        return
+
+    # Update booking status
+    booking['status'] = 'confirmed'
+    booking['confirmed_at'] = datetime.now()
+    booking['confirmed_by'] = user.id
+
+    # Update user profile stats and deduct points
+    user_id = booking['student_id']
+    if user_id in user_profiles:
+        user_profiles[user_id]['total_bookings'] += 1
+        user_profiles[user_id]['solcam_points'] -= booking['points_cost']
+        # Update current order status
+        if user_profiles[user_id].get('current_order'):
+            user_profiles[user_id]['current_order']['status'] = 'confirmed'
+
+    # Notify student
+    student_message = f"""✅ SOLCAM POINTS BOOKING APPROVED! ✅
+
+🎉 Great news! Your SolCam points booking has been approved.
+
+📋 Booking Details:
+• Model: {booking['teacher_name']}
+• Booking ID: {booking_id}
+• Points Used: {booking['points_cost']} SolCam
+• Status: ✅ Confirmed
+
+📞 Next Steps:
+Your model will contact you within 5 minutes to schedule your session.
+
+🪙 Thank you for being an early SolCam adopter! 
+Your loyalty will be rewarded in our token airdrop! 🚀"""
+
+    try:
+        await context.bot.send_message(booking['student_id'], student_message)
+    except Exception as e:
+        logger.error(f"Failed to notify student {booking['student_id']}: {e}")
+
+    # Notify admin
+    await context.bot.send_message(
+        update.effective_chat.id,
+        f"✅ SolCam points booking approved for {booking_id}. Student has been notified.\n"
+        f"Points deducted: {booking['points_cost']} SolCam"
+    )
+
+# Handle SolCam points booking rejection
+async def handle_reject_points_booking(update: Update, context: ContextTypes.DEFAULT_TYPE, booking_id: str) -> None:
+    user = update.effective_user
+
+    if not is_admin(user.id):
+        await context.bot.send_message(update.effective_chat.id, '❌ Access denied. Admin only.')
+        return
+
+    # Find booking in bookings list
+    booking = next((b for b in bookings if b['id'] == booking_id), None)
+    if not booking:
+        await context.bot.send_message(update.effective_chat.id, '❌ Booking not found.')
+        return
+
+    if booking['payment_method'] != 'solcam_points':
+        await context.bot.send_message(update.effective_chat.id, '❌ This is not a SolCam points booking.')
+        return
+
+    # Update booking status
+    booking['status'] = 'rejected'
+    booking['rejected_at'] = datetime.now()
+    booking['rejected_by'] = user.id
+
+    # Update user's current order status
+    user_id = booking['student_id']
+    if user_id in user_profiles and user_profiles[user_id].get('current_order'):
+        user_profiles[user_id]['current_order']['status'] = 'rejected'
+
+    # Notify student
+    student_message = f"""❌ SolCam Points Booking Rejected ❌
+
+We're sorry, but your SolCam points booking {booking_id} has been rejected.
+
+📞 Next Steps:
+• Contact our admin: {ADMIN_USERNAME}
+• Your SolCam points have NOT been deducted
+• You can try booking again
+• Or try booking with Bitcoin payment
+
+We're here to help! 🤝"""
+
+    try:
+        await context.bot.send_message(booking['student_id'], student_message)
+    except Exception as e:
+        logger.error(f"Failed to notify student {booking['student_id']}: {e}")
+
+    # Notify admin
+    await context.bot.send_message(
+        update.effective_chat.id,
+        f"❌ SolCam points booking rejected for {booking_id}. Student has been notified."
     )
 
 # Manage teachers (admin)
@@ -771,6 +976,98 @@ async def show_pending_payments(update: Update, context: ContextTypes.DEFAULT_TY
     reply_markup = create_inline_keyboard(keyboard)
 
     await context.bot.send_message(chat_id, payments_list, reply_markup=reply_markup)
+
+# Show SolCam points bookings for admin
+async def show_points_bookings_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    chat_id = update.effective_chat.id
+
+    if not is_admin(user.id):
+        await context.bot.send_message(chat_id, '❌ Access denied. Admin only.')
+        return
+
+    points_bookings = [b for b in bookings if b.get('payment_method') == 'solcam_points']
+
+    if not points_bookings:
+        await context.bot.send_message(chat_id, '❌ No SolCam points bookings yet.')
+        return
+
+    bookings_list = '🪙 SOLCAM POINTS BOOKINGS 🪙\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n'
+
+    for i, booking in enumerate(points_bookings, 1):
+        username_display = f"@{booking.get('student_username', 'No username')}" if booking.get('student_username') != "No username set" else "❌ No username"
+        status_emoji = {"pending_admin_approval": "🔄", "confirmed": "✅", "rejected": "❌"}
+        emoji = status_emoji.get(booking['status'], "❓")
+
+        bookings_list += f"""🪙 Points Booking #{i}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+👤 STUDENT INFO:
+📝 Name: {booking.get('student_name', 'Unknown')}
+🏷️ Username: {username_display}
+🆔 User ID: {booking['student_id']}
+
+💃 MODEL: {booking['teacher_name']}
+🪙 POINTS COST: {booking.get('points_cost', 0)} SolCam
+📅 DATE: {booking['created_at'].strftime('%Y-%m-%d %H:%M:%S')}
+🔄 STATUS: {emoji} {booking['status'].replace('_', ' ').title()}
+
+🆔 Booking ID: {booking['id']}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+"""
+
+    keyboard = [[InlineKeyboardButton("🔙 Back to Admin", callback_data='admin')]]
+    reply_markup = create_inline_keyboard(keyboard)
+    await context.bot.send_message(chat_id, bookings_list, reply_markup=reply_markup)
+
+# Show pending SolCam points bookings for admin
+async def show_pending_points_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    chat_id = update.effective_chat.id
+
+    if not is_admin(user.id):
+        await context.bot.send_message(chat_id, '❌ Access denied. Admin only.')
+        return
+
+    pending_points = [b for b in bookings if b.get('payment_method') == 'solcam_points' and b.get('status') == 'pending_admin_approval']
+
+    if not pending_points:
+        await context.bot.send_message(chat_id, '✅ No pending SolCam points bookings.')
+        return
+
+    bookings_list = '🔄 PENDING SOLCAM POINTS BOOKINGS 🔄\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n'
+
+    for booking in pending_points:
+        username_display = f"@{booking.get('student_username', 'No username')}" if booking.get('student_username') != "No username set" else "❌ No username"
+
+        bookings_list += f"""🔄 Pending Points Booking
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+👤 USER: {booking.get('student_name', 'Unknown')}
+🏷️ USERNAME: {username_display}
+💃 MODEL: {booking['teacher_name']}
+🪙 POINTS COST: {booking.get('points_cost', 0)} SolCam
+📅 DATE: {booking['created_at'].strftime('%Y-%m-%d %H:%M:%S')}
+
+🆔 Booking ID: {booking['id']}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+"""
+
+    keyboard = []
+    for booking in pending_points:
+        keyboard.append([
+            InlineKeyboardButton(f"✅ Approve {booking['id']}", callback_data=f"approve_points_{booking['id']}"),
+            InlineKeyboardButton(f"❌ Reject {booking['id']}", callback_data=f"reject_points_{booking['id']}")
+        ])
+
+    keyboard.append([InlineKeyboardButton("🔙 Back to Admin", callback_data='admin')])
+    reply_markup = create_inline_keyboard(keyboard)
+
+    await context.bot.send_message(chat_id, bookings_list, reply_markup=reply_markup)
 
 # Add new teacher
 async def add_teacher(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1064,26 +1361,49 @@ async def show_user_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     profile = user_profiles.get(user.id, {})
     referred_count = len(referrals.get(user.id, []))
     
+    # Get current order info
+    current_order = profile.get('current_order')
+    current_order_text = ""
+    if current_order:
+        status_emoji = {"pending_payment": "⏳", "pending_admin_approval": "🔄", "confirmed": "✅", "rejected": "❌"}
+        emoji = status_emoji.get(current_order['status'], "❓")
+        payment_info = ""
+        if current_order['payment_method'] == 'solcam_points':
+            payment_info = f"🪙 {current_order['points_used']} SolCam Points"
+        else:
+            payment_info = f"💰 ${current_order['price']}"
+        
+        current_order_text = f"""
+🎯 CURRENT ORDER:
+• Model: {current_order['teacher_name']}
+• Status: {emoji} {current_order['status'].replace('_', ' ').title()}
+• Payment: {payment_info}
+• Booking ID: {current_order['booking_id']}
+"""
+    else:
+        current_order_text = "\n🎯 CURRENT ORDER: None"
+
     profile_message = f"""👤 YOUR PROFILE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 👋 Name: {user.full_name}
 🆔 Username: @{user.username or 'Not set'}
-📅 Member Since: {profile.get('join_date', 'N/A')}
+📅 Member Since: {profile.get('join_date', 'N/A')}{current_order_text}
 
 📊 STATISTICS:
 • Total Bookings: {profile.get('total_bookings', 0)}
 • Total Spent: ${profile.get('total_spent', 0)}
-• Referral Bonus: ${profile.get('referral_bonus', 0)}
+• SolCam Points: 🪙 {profile.get('solcam_points', 0)}
 • Friends Referred: {referred_count}
 
-💰 REWARDS:
-• Available Bonus: ${profile.get('referral_bonus', 0)}
-• Next Booking Discount: ${min(profile.get('referral_bonus', 0), 50)}
+🪙 SOLCAM TOKEN AIRDROP:
+• Current Points: {profile.get('solcam_points', 0)} SolCam
+• Points = Future Tokens 🚀
+• 1 Point = 1 Hour with Cam Girl
 
 🎁 REFERRAL PROGRAM:
-• Earn ${REFERRAL_BONUS} for each friend who joins!
-• Your friends get ${REFERRAL_DISCOUNT} discount!
+• Earn {REFERRAL_BONUS} SolCam point for each friend who joins!
+• Build your token portfolio before launch! 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
 
@@ -1104,31 +1424,34 @@ async def show_referral_system(update: Update, context: ContextTypes.DEFAULT_TYP
     referred_users = referrals.get(user.id, [])
     referral_link = f"https://t.me/{context.bot.username}?start={user.id}"
     
-    referral_message = f"""🎁 REFERRAL PROGRAM
+    referral_message = f"""🎁 SOLCAM REFERRAL PROGRAM
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-💰 EARN REWARDS BY INVITING FRIENDS!
+🪙 EARN SOLCAM POINTS FOR FUTURE AIRDROP!
 
 🎯 How it works:
 1. Share your referral link
 2. Friend joins using your link
-3. You earn ${REFERRAL_BONUS} bonus
-4. Friend gets ${REFERRAL_DISCOUNT} discount
+3. You earn {REFERRAL_BONUS} SolCam point
+4. Friend gets access to our platform
 
 📊 YOUR STATS:
 • Friends Referred: {len(referred_users)}
-• Total Earned: ${len(referred_users) * REFERRAL_BONUS}
-• Available Bonus: ${user_profiles.get(user.id, {}).get('referral_bonus', 0)}
+• Total Earned: {len(referred_users) * REFERRAL_BONUS} SolCam Points
+• Available Points: {user_profiles.get(user.id, {}).get('solcam_points', 0)} SolCam
 
 🔗 YOUR REFERRAL LINK:
 `{referral_link}`
 
-📱 Share this link with friends to earn rewards!
+📱 Share this link with friends to earn points!
 
-💡 Tips for more referrals:
-• Share in group chats
-• Post on social media
-• Tell friends about our amazing models
+💡 Benefits of SolCam Points:
+• Book cam girls for FREE with points
+• Points = Future tokens in airdrop 🚀
+• Early adopter advantage
+• No payment needed, just points!
+
+🪙 1 SolCam Point = 1 Hour with any cam girl!
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
 
@@ -1155,10 +1478,10 @@ async def show_my_referrals(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 You haven't referred anyone yet! 😔
 
 🎯 Start earning by sharing your referral link:
-• Each friend = ${} bonus for you
-• Friends get ${} discount
+• Each friend = {} SolCam point for you
+• Points = Free cam girl sessions!
 
-Share your link and start earning! 💰""".format(REFERRAL_BONUS, REFERRAL_DISCOUNT)
+Share your link and start earning! 🪙""".format(REFERRAL_BONUS)
     else:
         message = f"""👥 MY REFERRALS ({len(referred_users)})
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1168,11 +1491,11 @@ Share your link and start earning! 💰""".format(REFERRAL_BONUS, REFERRAL_DISCO
             try:
                 referred_user = await context.bot.get_chat(referred_id)
                 name = referred_user.first_name or "Unknown"
-                message += f"{i}. {name} (+${REFERRAL_BONUS})\n"
+                message += f"{i}. {name} (+{REFERRAL_BONUS} SolCam)\n"
             except:
-                message += f"{i}. User ID: {referred_id} (+${REFERRAL_BONUS})\n"
+                message += f"{i}. User ID: {referred_id} (+{REFERRAL_BONUS} SolCam)\n"
         
-        message += f"\n💰 Total Earned: ${len(referred_users) * REFERRAL_BONUS}"
+        message += f"\n🪙 Total Earned: {len(referred_users) * REFERRAL_BONUS} SolCam Points"
     
     keyboard = [
         [InlineKeyboardButton("🎁 Refer More", callback_data='referral_system')],
@@ -1255,7 +1578,7 @@ async def show_leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             medal = medals[i-1] if i <= 3 else f"{i}."
             message += f"{medal} {name} - {count} referrals\n"
     
-    message += f"\n💡 Each referral = ${REFERRAL_BONUS} bonus!"
+    message += f"\n🪙 Each referral = {REFERRAL_BONUS} SolCam point!"
     
     keyboard = [
         [InlineKeyboardButton("🎁 Start Referring", callback_data='referral_system')],
@@ -1289,6 +1612,12 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
 
         elif callback_data == 'view_payments':
             await show_pending_payments(update, context)
+
+        elif callback_data == 'view_points_bookings':
+            await show_points_bookings_admin(update, context)
+
+        elif callback_data == 'view_points_pending':
+            await show_pending_points_bookings(update, context)
 
         elif callback_data == 'add_teacher':
             await add_teacher(update, context)
@@ -1447,6 +1776,14 @@ Our admin will facilitate the connection within 5 minutes! 🚀"""
         elif callback_data.startswith('reject_payment_'):
             booking_id = callback_data.split('_')[2]
             await handle_reject_payment(update, context, booking_id)
+
+        elif callback_data.startswith('approve_points_'):
+            booking_id = callback_data.split('_')[2]
+            await handle_approve_points_booking(update, context, booking_id)
+
+        elif callback_data.startswith('reject_points_'):
+            booking_id = callback_data.split('_')[2]
+            await handle_reject_points_booking(update, context, booking_id)
 
         else:
             await context.bot.send_message(
